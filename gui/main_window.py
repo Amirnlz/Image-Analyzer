@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
@@ -19,6 +20,8 @@ class MainWindow(QMainWindow):
         self.color_processor = None
         self.current_aspect_ratio = 1.0
         self.setup_ui()
+        self.width_cm = None
+        self.height_cm = None
 
     def setup_ui(self):
         # Main widget and layout
@@ -84,15 +87,15 @@ class MainWindow(QMainWindow):
                                 "Please enter a valid density.")
             return
 
-        width_cm, height_cm = self.calculator.calculate_size(
+        self.width_cm, self.height_cm = self.calculator.calculate_size(
             self.image_handler.width_px,
             self.image_handler.height_px
         )
 
-        self.width_label.setText(f"Width: {width_cm:.2f} cm")
-        self.height_label.setText(f"Height: {height_cm:.2f} cm")
-        self.width_input.setText(f"{width_cm:.2f}")
-        self.current_aspect_ratio = height_cm / width_cm
+        self.width_label.setText(f"Width: {self.width_cm:.2f} cm")
+        self.height_label.setText(f"Height: {self.height_cm:.2f} cm")
+        self.width_input.setText(f"{self.width_cm:.2f}")
+        self.current_aspect_ratio = self.height_cm / self.width_cm
 
     def update_calculation(self):
         if self.image_handler.image:
@@ -107,6 +110,10 @@ class MainWindow(QMainWindow):
         new_height_cm = new_width_cm * self.current_aspect_ratio
         self.width_label.setText(f"Width: {new_width_cm:.2f} cm")
         self.height_label.setText(f"Height: {new_height_cm:.2f} cm")
+
+        # Update the stored width and height
+        self.width_cm = new_width_cm
+        self.height_cm = new_height_cm
 
     def process_image(self):
         if not self.image_handler.image:
@@ -133,33 +140,37 @@ class MainWindow(QMainWindow):
 
     def processing_finished(self, color_processor):
         self.color_processor = color_processor
-        # Save the processed image
-        save_path, selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "Save Processed Image",
-            "",
-            "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg)"
-        )
-        if save_path:
-            self.color_processor.update_image()
-            self.image_handler.image = self.color_processor.image
+        self.color_processor.update_image()
+        self.image_handler.image = self.color_processor.image
 
-            # Ensure the file extension is included
-            if not os.path.splitext(save_path)[1]:
-                if "PNG" in selected_filter:
-                    save_path += ".png"
-                elif "JPEG" in selected_filter:
-                    save_path += ".jpg"
+        # Prepare variables for filename
+        width_cm = self.width_cm
+        height_cm = self.height_cm
+        density = self.calculator.density
 
-            # Save the image with the correct format
-            self.image_handler.save_image(save_path)
+        # Create the report directory if it doesn't exist
+        report_dir = os.path.join(os.getcwd(), 'report')
+        os.makedirs(report_dir, exist_ok=True)
+
+        # Construct the filename with width, height, and density
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        image_filename = f"processed_image_{width_cm:.2f}x{height_cm:.2f}_density{density}_{timestamp}.png"
+        image_path = os.path.join(report_dir, image_filename)
+
+        # Save the image
+        self.image_handler.save_image(image_path)
 
         # Generate PDF report
+        pdf_filename = f"color_report_{timestamp}.pdf"
+        pdf_path = os.path.join(report_dir, pdf_filename)
         report = PDFReport(self.color_processor.color_ranges)
-        report.generate()
+        report.generate(pdf_path)
 
         QMessageBox.information(
-            self, "Success", "Image processed and PDF report generated.")
+            self,
+            "Success",
+            f"Image processed and saved to:\n{image_path}\n\nPDF report saved to:\n{pdf_path}"
+        )
 
 
 class ProcessingWorker(QObject):

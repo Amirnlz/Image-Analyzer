@@ -2,6 +2,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.colors import Color
 
+
 class PDFReport:
     def __init__(self, color_ranges):
         self.color_ranges = color_ranges
