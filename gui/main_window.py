@@ -1,12 +1,14 @@
+import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
     QFileDialog, QMessageBox, QVBoxLayout, QHBoxLayout, QProgressBar
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from core.image_handler import ImageHandler
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 from core.calculator import Calculator
 from core.color_processor import ColorProcessor
+from core.image_handler import ImageHandler
 from reports.pdf_report import PDFReport
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -78,7 +80,8 @@ class MainWindow(QMainWindow):
             density = float(self.density_input.text())
             self.calculator.density = density
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid density.")
+            QMessageBox.warning(self, "Invalid Input",
+                                "Please enter a valid density.")
             return
 
         width_cm, height_cm = self.calculator.calculate_size(
@@ -107,7 +110,8 @@ class MainWindow(QMainWindow):
 
     def process_image(self):
         if not self.image_handler.image:
-            QMessageBox.warning(self, "No Image", "Please select an image first.")
+            QMessageBox.warning(
+                self, "No Image", "Please select an image first.")
             return
 
         # Start processing in a separate thread
@@ -124,24 +128,39 @@ class MainWindow(QMainWindow):
 
         self.thread.start()
         self.process_button.setEnabled(False)
-        self.thread.finished.connect(lambda: self.process_button.setEnabled(True))
+        self.thread.finished.connect(
+            lambda: self.process_button.setEnabled(True))
 
     def processing_finished(self, color_processor):
         self.color_processor = color_processor
         # Save the processed image
-        save_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Processed Image", "", "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg)"
+        save_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Processed Image",
+            "",
+            "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg)"
         )
         if save_path:
             self.color_processor.update_image()
             self.image_handler.image = self.color_processor.image
+
+            # Ensure the file extension is included
+            if not os.path.splitext(save_path)[1]:
+                if "PNG" in selected_filter:
+                    save_path += ".png"
+                elif "JPEG" in selected_filter:
+                    save_path += ".jpg"
+
+            # Save the image with the correct format
             self.image_handler.save_image(save_path)
 
         # Generate PDF report
         report = PDFReport(self.color_processor.color_ranges)
         report.generate()
 
-        QMessageBox.information(self, "Success", "Image processed and PDF report generated.")
+        QMessageBox.information(
+            self, "Success", "Image processed and PDF report generated.")
+
 
 class ProcessingWorker(QObject):
     finished = pyqtSignal()
