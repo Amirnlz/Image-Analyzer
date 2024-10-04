@@ -2,3 +2,4 @@ Pillow
 numpy
 scikit-learn
 reportlab
+PyQt6
