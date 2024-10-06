@@ -1,10 +1,11 @@
 from datetime import datetime
 import os
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QLabel, QPushButton, QLineEdit,
-    QFileDialog, QMessageBox, QVBoxLayout, QHBoxLayout, QProgressBar
+    QMainWindow, QWidget, QLabel, QPushButton,
+    QLineEdit, QFileDialog, QMessageBox, QVBoxLayout, QHBoxLayout,
+    QProgressBar
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, pyqtSlot
 from core.calculator import Calculator
 from core.color_processor import ColorProcessor
 from core.image_handler import ImageHandler
@@ -18,10 +19,25 @@ class MainWindow(QMainWindow):
         self.image_handler = ImageHandler()
         self.calculator = Calculator()
         self.color_processor = None
-        self.current_aspect_ratio = 1.0
-        self.setup_ui()
+        self.aspect_ratio = None
         self.width_cm = None
         self.height_cm = None
+        self.thread = None
+        self.worker = None
+
+        # Declare GUI components as instance attributes
+        self.select_button = None
+        self.density_label = None
+        self.density_input = None
+        self.size_label = None
+        self.width_label = None
+        self.height_label = None
+        self.adjust_label = None
+        self.width_input = None
+        self.process_button = None
+        self.progress_bar = None
+
+        self.setup_ui()
 
     def setup_ui(self):
         # Main widget and layout
@@ -56,6 +72,7 @@ class MainWindow(QMainWindow):
         adjust_layout = QHBoxLayout()
         self.adjust_label = QLabel("Adjust Width (cm):")
         self.width_input = QLineEdit()
+        self.width_input.setEnabled(False)  # Disable the input initially
         self.width_input.textChanged.connect(self.adjust_size)
         adjust_layout.addWidget(self.adjust_label)
         adjust_layout.addWidget(self.width_input)
@@ -83,8 +100,7 @@ class MainWindow(QMainWindow):
             density = float(self.density_input.text())
             self.calculator.density = density
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input",
-                                "Please enter a valid density.")
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid density.")
             return
 
         self.width_cm, self.height_cm = self.calculator.calculate_size(
@@ -95,19 +111,39 @@ class MainWindow(QMainWindow):
         self.width_label.setText(f"Width: {self.width_cm:.2f} cm")
         self.height_label.setText(f"Height: {self.height_cm:.2f} cm")
         self.width_input.setText(f"{self.width_cm:.2f}")
-        self.current_aspect_ratio = self.height_cm / self.width_cm
 
+        # Calculate aspect ratio using Calculator
+        self.aspect_ratio = self.calculator.calculate_aspect_ratio(
+            self.image_handler.width_px, self.image_handler.height_px
+        )
+
+        # Check if aspect_ratio is valid
+        if self.aspect_ratio is None:
+            QMessageBox.warning(self, "Error", "Invalid image dimensions.")
+            return
+
+        # Enable the width input field now that the aspect ratio is known
+        self.width_input.setEnabled(True)
+
+    @pyqtSlot(str)
     def update_calculation(self):
         if self.image_handler.image:
             self.calculate_size()
 
     def adjust_size(self):
+        if self.aspect_ratio is None:
+            # Aspect ratio is not set yet, so cannot adjust size
+            return
         try:
             new_width_cm = float(self.width_input.text())
         except ValueError:
             return
 
-        new_height_cm = new_width_cm * self.current_aspect_ratio
+        # Use Calculator to adjust size
+        new_width_cm, new_height_cm = self.calculator.adjust_size(
+            new_width_cm, self.aspect_ratio
+        )
+
         self.width_label.setText(f"Width: {new_width_cm:.2f} cm")
         self.height_label.setText(f"Height: {new_height_cm:.2f} cm")
 

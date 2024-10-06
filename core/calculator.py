@@ -9,6 +9,11 @@ class Calculator:
         height_cm = ((height_px / density) * 7) / 10
         return width_cm, height_cm
 
+    def calculate_aspect_ratio(self, width_px, height_px):
+        if width_px == 0:
+            return None
+        return height_px / width_px
+
     def adjust_size(self, new_width_cm, aspect_ratio):
         new_height_cm = new_width_cm * aspect_ratio
         return new_width_cm, new_height_cm
