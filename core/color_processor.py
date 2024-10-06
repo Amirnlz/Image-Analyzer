@@ -9,11 +9,16 @@ from PIL import Image
 
 class ColorProcessor:
     def __init__(self, image):
+        # Convert image to RGB and get pixel data
         self.image = image.convert('RGB')
         self.image_data = np.array(self.image)
-        self.pixels = self.image_data.reshape(-1, 3)
-        self.pixels_lab = rgb2lab(self.pixels.reshape(-1, 1, 3)).reshape(-1, 3)
-        self.total_pixels = len(self.pixels)
+        self.pixels_rgb = self.image_data.reshape(-1, 3)
+
+        # Precompute LAB and HSV values to avoid repeated conversions
+        self.pixels_lab = rgb2lab(self.pixels_rgb.reshape(-1, 1, 3)).reshape(-1, 3)
+        self.pixels_hsv = np.array([self.rgb_to_hsv(pixel) for pixel in self.pixels_rgb])
+
+        self.total_pixels = len(self.pixels_rgb)
         self.color_palette = []
         self.color_ranges = []
         self.segments = None
@@ -46,29 +51,47 @@ class ColorProcessor:
         self.num_segments = np.max(self.segments) + 1
 
     def remove_infrequent_colors(self):
-        color_counts = Counter(map(tuple, self.pixels))
+        # Count occurrences of each color
+        color_counts = Counter(map(tuple, self.pixels_rgb))
         self.frequent_colors = {color for color, count in color_counts.items() if count >= self.min_color_count}
-        self.frequent_pixels_mask = np.array([tuple(pixel) in self.frequent_colors for pixel in self.pixels])
-        self.pixels_frequent = self.pixels[self.frequent_pixels_mask]
+
+        # Create a mask to filter out infrequent colors
+        self.frequent_pixels_mask = np.array([tuple(pixel) in self.frequent_colors for pixel in self.pixels_rgb])
+
+        # Filter only frequent colors
+        self.pixels_frequent_rgb = self.pixels_rgb[self.frequent_pixels_mask]
         self.pixels_frequent_lab = self.pixels_lab[self.frequent_pixels_mask]
+        self.pixels_frequent_hsv = self.pixels_hsv[self.frequent_pixels_mask]
 
     def group_colors_by_hue(self):
-        hues = np.array([self.rgb_to_hsv(pixel)[0] for pixel in self.pixels_frequent])
+        # Group colors based on hue values in HSV space
+        hues = self.pixels_frequent_hsv[:, 0]
         num_categories = min(len(np.unique(hues)), self.max_categories)
+
+        if num_categories == 0:
+            # Skip if no distinct hues are present
+            self.hue_labels = np.zeros(len(hues), dtype=int)
+            return
+
         kmeans = KMeans(n_clusters=num_categories, random_state=42)
         self.hue_labels = kmeans.fit_predict(hues.reshape(-1, 1))
         self.cluster_centers = kmeans.cluster_centers_
 
+        # Create a dictionary to store hue categories
         self.hue_categories = {label: {'pixels': [], 'indices': []} for label in range(num_categories)}
-        for idx, (label, pixel_rgb) in enumerate(zip(self.hue_labels, self.pixels_frequent)):
-            self.hue_categories[label]['pixels'].append(pixel_rgb)
+        for idx, label in enumerate(self.hue_labels):
+            self.hue_categories[label]['pixels'].append(self.pixels_frequent_rgb[idx])
             self.hue_categories[label]['indices'].append(idx)
 
     def limit_colors_within_categories(self):
         self.limited_categories = {}
+
         for label, category_data in self.hue_categories.items():
             hsv_values = np.array([self.rgb_to_hsv(pixel) for pixel in category_data['pixels']])
             num_colors = min(len(hsv_values), self.max_colors_per_category)
+
+            if num_colors == 0:
+                continue
 
             kmeans = KMeans(n_clusters=num_colors, random_state=42)
             labels = kmeans.fit_predict(hsv_values[:, 2].reshape(-1, 1))
@@ -86,14 +109,15 @@ class ColorProcessor:
             }
             self.color_palette.extend(category_palette)
 
+        # Convert color palette to LAB for further processing
         self.color_palette_lab = rgb2lab(np.array(self.color_palette).reshape(-1, 1, 3)).reshape(-1, 3)
 
     def process_segments(self):
-        new_pixels = np.zeros_like(self.pixels)
+        new_pixels = np.zeros_like(self.pixels_rgb)
 
         for segment_label in range(self.num_segments):
             segment_mask = self.segments.reshape(-1) == segment_label
-            segment_pixels = self.pixels[segment_mask]
+            segment_pixels = self.pixels_rgb[segment_mask]
 
             if len(segment_pixels) < self.min_segment_size:
                 new_pixels[segment_mask] = segment_pixels
