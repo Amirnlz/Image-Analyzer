@@ -188,18 +188,21 @@ class MainWindow(QMainWindow):
         report_dir = os.path.join(os.getcwd(), 'report')
         os.makedirs(report_dir, exist_ok=True)
 
-        # Construct the filename with width, height, and density
+        # Construct filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         image_filename = f"processed_image_{width_cm:.2f}x{height_cm:.2f}_density{density}_{timestamp}.png"
         image_path = os.path.join(report_dir, image_filename)
 
-        # Save the image
+        original_image_path = os.path.join(report_dir, f"original_image_{timestamp}.png")
+        self.image_handler.save_original_image(original_image_path)
+
+        # Save the processed image
         self.image_handler.save_image(image_path)
 
         # Generate PDF report
         pdf_filename = f"color_report_{timestamp}.pdf"
         pdf_path = os.path.join(report_dir, pdf_filename)
-        report = PDFReport(self.color_processor.color_ranges)
+        report = PDFReport(self.color_processor.color_ranges, original_image_path, image_path)
         report.generate(pdf_path)
 
         QMessageBox.information(
