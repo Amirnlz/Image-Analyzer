@@ -3,6 +3,7 @@ from collections import Counter
 from sklearn.cluster import KMeans
 from skimage.segmentation import felzenszwalb
 from skimage.util import img_as_float
+from PIL import Image
 
 
 class ColorProcessor:
@@ -16,27 +17,91 @@ class ColorProcessor:
 
     def process_colors(self, progress_callback=None):
         if progress_callback:
-            progress_callback.emit(10)
+            progress_callback.emit(5)
         self.extract_colors()
 
         if progress_callback:
-            progress_callback.emit(30)
+            progress_callback.emit(15)
+        self.segment_image()
+
+        if progress_callback:
+            progress_callback.emit(25)
         self.remove_infrequent_colors()
 
         if progress_callback:
-            progress_callback.emit(50)
-        self.group_colors_by_hue()
-
-        if progress_callback:
-            progress_callback.emit(70)
-        self.limit_colors_within_categories()
-
-        if progress_callback:
-            progress_callback.emit(90)
-        self.replace_excess_colors()
+            progress_callback.emit(40)
+        self.process_segments(progress_callback)
 
         if progress_callback:
             progress_callback.emit(100)
+
+    def segment_image(self):
+        # Convert image to float format for segmentation
+        image_float = img_as_float(self.image)
+        # Perform segmentation
+        self.segments = felzenszwalb(image_float, scale=100, sigma=0.5, min_size=50)
+        self.num_segments = np.max(self.segments) + 1
+
+    def process_segments(self, progress_callback=None):
+        # Initialize an array for new pixels
+        new_pixels = np.zeros_like(self.pixels)
+
+        for segment_label in range(self.num_segments):
+            if progress_callback:
+                progress_callback.emit(40 + int(60 * segment_label / self.num_segments))
+
+            # Get indices of pixels in this segment
+            segment_mask = self.segments.reshape(-1) == segment_label
+            segment_pixels = self.pixels[segment_mask]
+
+            # Proceed if the segment has enough pixels
+            if len(segment_pixels) < 50:
+                new_pixels[segment_mask] = segment_pixels
+                continue
+
+            # Process colors within the segment
+            self.pixels = segment_pixels
+            self.total_pixels = len(self.pixels)
+
+            # Remove infrequent colors within the segment
+            self.remove_infrequent_colors()
+
+            if len(self.pixels_frequent) == 0:
+                # If no frequent colors, skip processing
+                new_pixels[segment_mask] = segment_pixels
+                continue
+
+            # Group colors by hue and limit colors
+            self.group_colors_by_hue()
+            self.limit_colors_within_categories()
+
+            # Replace colors within the segment
+            segment_new_pixels = np.zeros_like(segment_pixels)
+            frequent_indices = np.where(self.frequent_pixels_mask)[0]
+            for label, category in self.limited_categories.items():
+                indices_in_category = [frequent_indices[idx] for idx in category['indices']]
+                cluster_labels = category['labels']
+                palette = category['palette']
+
+                for idx_in_category, original_idx in enumerate(indices_in_category):
+                    cluster_label = cluster_labels[idx_in_category]
+                    new_color = palette[cluster_label]
+                    segment_new_pixels[original_idx] = new_color
+
+            # Handle infrequent colors within the segment
+            infrequent_indices = np.where(~self.frequent_pixels_mask)[0]
+            infrequent_pixels = segment_pixels[~self.frequent_pixels_mask]
+
+            for idx, pixel in zip(infrequent_indices, infrequent_pixels):
+                pixel_hsv = self.rgb_to_hsv(pixel)
+                distances = [self.color_distance(pixel_hsv, self.rgb_to_hsv(color)) for color in self.color_palette]
+                nearest_color = self.color_palette[np.argmin(distances)]
+                segment_new_pixels[idx] = nearest_color
+
+            # Place processed pixels back into the new_pixels array
+            new_pixels[segment_mask] = segment_new_pixels
+
+        self.image_data = new_pixels.reshape(self.image_data.shape)
 
     def extract_colors(self):
         self.image = self.image.convert('RGB')

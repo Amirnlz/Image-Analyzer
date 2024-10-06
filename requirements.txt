@@ -1,5 +1,6 @@
-Pillow
-numpy
-scikit-learn
-reportlab
-PyQt6
+Pillow~=10.4.0
+numpy~=2.1.2
+scikit-learn~=1.5.2
+reportlab~=4.2.5
+PyQt6~=6.7.1
+scikit-image~=0.24.0
