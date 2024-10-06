@@ -1,5 +1,6 @@
 import numpy as np
 from collections import Counter
+from skimage.color import rgb2lab
 from sklearn.cluster import KMeans
 from skimage.segmentation import felzenszwalb
 from skimage.util import img_as_float
@@ -8,6 +9,7 @@ from PIL import Image
 
 class ColorProcessor:
     def __init__(self, image):
+        self.color_palette_lab = None
         self.image = image
         self.color_ranges = []
         self.max_colors_per_category = 12
@@ -108,6 +110,8 @@ class ColorProcessor:
         self.image_data = np.array(self.image)
         self.pixels = self.image_data.reshape(-1, 3)
         self.total_pixels = len(self.pixels)
+        # Convert RGB to LAB
+        self.pixels_lab = rgb2lab(self.pixels.reshape(-1, 1, 3)).reshape(-1, 3)
 
     def remove_infrequent_colors(self):
         # Count occurrences of each color
@@ -198,10 +202,9 @@ class ColorProcessor:
 
         # Map infrequent colors to the nearest frequent color
         for idx, pixel in zip(infrequent_indices, infrequent_pixels):
-            # Convert to HSV
-            pixel_hsv = self.rgb_to_hsv(pixel)
-            # Find the nearest color in the palette
-            distances = [self.color_distance(pixel_hsv, self.rgb_to_hsv(color)) for color in self.color_palette]
+            # Use LAB color space
+            pixel_lab = self.pixels_lab[idx]
+            distances = [self.color_distance(pixel_lab, lab_color) for lab_color in self.color_palette_lab]
             nearest_color = self.color_palette[np.argmin(distances)]
             new_pixels[idx] = nearest_color
 
@@ -266,6 +269,7 @@ class ColorProcessor:
         return np.array([int(r * 255), int(g * 255), int(b * 255)])
 
     @staticmethod
-    def color_distance(hsv1, hsv2):
-        # Calculate the Euclidean distance between two HSV colors
-        return np.linalg.norm(hsv1 - hsv2)
+    def color_distance(color1_lab, color2_lab):
+        # Use Delta E (CIEDE2000)
+        delta_e = np.linalg.norm(color1_lab - color2_lab)
+        return delta_e
