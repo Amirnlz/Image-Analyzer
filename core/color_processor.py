@@ -5,12 +5,14 @@ from typing import List, Dict, Tuple, Callable, Optional, Union
 
 
 class ColorProcessor:
-    def __init__(self, image: Image.Image):
+    def __init__(self, image: Image.Image, min_color_usage=20):
         self.image = image
+        self.min_color_usage = min_color_usage
         self.color_ranges: List[List[Tuple[int, int, int]]] = []
         self.max_colors_per_category = 12
         self.max_categories = 10
         self.hue_tolerance = 15  # Degrees of hue tolerance for grouping
+        self.color_usage = {}
 
     def process_colors(self, progress_callback: Optional[Callable] = None) -> None:
         steps = [
@@ -51,6 +53,7 @@ class ColorProcessor:
     def limit_colors_within_categories(self) -> None:
         self.limited_categories: Dict[int, Dict] = {}
         self.color_palette: List[Tuple[int, int, int]] = []
+        self.color_usage: Dict[Tuple[int, int, int], int] = {}
 
         for label, category_data in self.hue_categories.items():
             hsv_values = np.array([pixel['hsv'] for pixel in category_data['pixels']])
@@ -65,6 +68,11 @@ class ColorProcessor:
                 for center in cluster_centers
             ]
 
+            # Count how many times each color appears
+            for idx, cluster_label in enumerate(labels):
+                rgb_color = tuple(category_palette[cluster_label])
+                self.color_usage[rgb_color] = self.color_usage.get(rgb_color, 0) + 1
+
             self.limited_categories[label] = {
                 'palette': category_palette,
                 'labels': labels,
@@ -75,12 +83,23 @@ class ColorProcessor:
     def replace_excess_colors(self) -> None:
         new_pixels = np.zeros_like(self.pixels)
 
+        # Iterate over each hue category
         for category in self.limited_categories.values():
             indices = category['indices']
             cluster_labels = category['labels']
             palette = category['palette']
 
-            new_pixels[indices] = [palette[label] for label in cluster_labels]
+            # Replace colors for pixels in this category
+            for idx_in_category, original_idx in enumerate(indices):
+                cluster_label = cluster_labels[idx_in_category]
+                new_color = tuple(palette[cluster_label])
+
+                # Only use colors that appear `min_color_usage` times or more
+                if self.color_usage.get(new_color, 0) >= self.min_color_usage:
+                    new_pixels[original_idx] = new_color
+                else:
+                    # Assign a default color (black or white) for colors used less than `min_color_usage` times
+                    new_pixels[original_idx] = [0, 0, 0]  # Black as default for unused colors
 
         self.image_data = new_pixels.reshape(self.image_data.shape)
 
