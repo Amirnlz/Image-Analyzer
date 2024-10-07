@@ -220,6 +220,7 @@ class ProcessingWorker(QObject):
 
     def run(self):
         processor = ColorProcessor(self.image)
-        processor.process_colors(self.progress)
+        # Pass a lambda function that emits the progress signal
+        processor.process_colors(progress_callback=lambda p: self.progress.emit(p))
         self.result.emit(processor)
         self.finished.emit()

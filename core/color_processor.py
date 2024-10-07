@@ -1,7 +1,7 @@
 from PIL import Image
 import numpy as np
 from sklearn.cluster import KMeans
-from typing import List, Dict, Tuple, Callable, Optional
+from typing import List, Dict, Tuple, Callable, Optional, Union
 
 
 class ColorProcessor:
@@ -95,7 +95,8 @@ class ColorProcessor:
         ]
 
     @staticmethod
-    def rgb_to_hsv(rgb: np.ndarray) -> np.ndarray:
+    def rgb_to_hsv(rgb: Union[np.ndarray, Tuple[int, int, int]]) -> np.ndarray:
+        rgb = np.asarray(rgb, dtype=float)
         r, g, b = rgb / 255.0
         maxc = max(r, g, b)
         minc = min(r, g, b)
@@ -120,7 +121,7 @@ class ColorProcessor:
         return np.array([h * 360, s, v])
 
     @staticmethod
-    def hsv_to_rgb(hsv: np.ndarray) -> Tuple[int, int, int]:
+    def hsv_to_rgb(hsv: np.ndarray) -> np.ndarray:
         h, s, v = hsv
         h = (h % 360) / 60.0
 
@@ -142,4 +143,4 @@ class ColorProcessor:
         else:
             r, g, b = v, p, q
 
-        return tuple(int(x * 255) for x in (r, g, b))
+        return np.array([int(x * 255) for x in (r, g, b)], dtype=int)
