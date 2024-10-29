@@ -1,311 +1,266 @@
-from PIL import Image
+import cv2
 import numpy as np
-from sklearn.cluster import KMeans, DBSCAN
-from sklearn.preprocessing import StandardScaler
-from typing import List, Dict, Tuple, Callable, Optional, Union
-from skimage import color
+from sklearn.cluster import MiniBatchKMeans, AgglomerativeClustering
+from sklearn.metrics import pairwise_distances_argmin_min
 from collections import Counter
+from typing import List, Tuple, Dict
+from PIL import Image
 
 
 class ColorProcessor:
     def __init__(self, image: Image.Image):
-        """Initialize the color processor with an image"""
+        """
+        Initialize the ColorProcessor with an image.
+        :param image: PIL.Image.Image - Input image to process.
+        """
         if not isinstance(image, Image.Image):
             raise TypeError("Input must be a PIL Image")
 
-        self.image = image
+        # Convert PIL Image to OpenCV image format (numpy array)
+        self.image_pil = image.convert('RGB')
+        self.image = cv2.cvtColor(np.array(self.image_pil), cv2.COLOR_RGB2BGR)
+
+        # Configuration parameters
+        self.max_colors = 120  # Maximum number of colors in the final image
+        self.min_color_frequency = 20  # Minimum frequency for a color to be considered important
+        self.max_groups = 12  # Maximum number of color groups
+        self.ideal_group_size = 12  # Ideal number of colors per group
+        self.critical_region_weight = 2.0  # Weight to give critical regions during quantization
+
+        # Variables to store processing results
+        self.color_palette: List[Tuple[int, int, int]] = []
+        self.color_groups: Dict[int, List[Tuple[int, int, int]]] = {}
         self.color_ranges: List[List[Tuple[int, int, int]]] = []
-        self.max_colors_per_category = 12
-        self.max_categories = 10
-        self.min_color_frequency = 20
-        self.skin_tone_tolerance = 0.1
+        self.quantized_image: np.ndarray = None
 
-    def process_colors(self, progress_callback: Optional[Callable] = None) -> None:
-        """Process colors with progress tracking"""
-        try:
-            steps = [
-                (self.extract_colors, 10),
-                (self.analyze_color_distribution, 20),
-                (self.detect_special_cases, 30),
-                (self.group_colors, 50),
-                (self.limit_colors_within_categories, 70),
-                (self.replace_excess_colors, 90),
-                (self.update_image, 100)
-            ]
+    def process_colors(self, progress_callback=None):
+        """
+        Process the image colors according to the specified requirements.
+        :param progress_callback: Optional callback function to report progress.
+        """
+        steps = [
+            (self.preprocess_image, 5),
+            (self.extract_colors, 10),
+            (self.detect_critical_regions, 20),
+            (self.quantize_colors, 60),
+            (self.group_colors, 80),
+            (self.replace_colors, 90),
+            (self.update_image, 100)
+        ]
 
-            for step, progress in steps:
-                try:
-                    step()
-                    if progress_callback:
-                        progress_callback(progress)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Error in step {step.__name__}: {str(e)}")
+        for step, progress in steps:
+            step()
+            if progress_callback:
+                progress_callback(progress)
 
-        except Exception as e:
-            raise RuntimeError(f"Color processing failed: {str(e)}")
+    def preprocess_image(self):
+        """
+        Preprocess the image: resize if necessary, and convert color spaces.
+        """
+        # Optional: Resize the image if it's too large to reduce computation time
+        max_dimension = 800  # You can adjust this value
+        height, width = self.image.shape[:2]
+        if max(height, width) > max_dimension:
+            scaling_factor = max_dimension / max(height, width)
+            self.image = cv2.resize(self.image, None, fx=scaling_factor, fy=scaling_factor,
+                                    interpolation=cv2.INTER_AREA)
+            print(f"Image resized to {self.image.shape[1]}x{self.image.shape[0]} for processing.")
 
-    def extract_colors(self) -> None:
-        """Extract colors and convert to different color spaces"""
-        try:
-            self.image = self.image.convert('RGB')
-            self.image_data = np.array(self.image)
-            self.pixels_rgb = self.image_data.reshape(-1, 3)
+    def extract_colors(self):
+        """
+        Extract colors from the image and calculate their frequencies.
+        """
+        # Reshape the image to a 2D array of pixels
+        self.pixels = self.image.reshape((-1, 3))
 
-            # Normalize RGB values to [0, 1] range
-            pixels_rgb_norm = self.pixels_rgb.astype(float) / 255.0
+        # Calculate color frequencies
+        pixels_list = [tuple(pixel) for pixel in self.pixels]
+        self.color_frequencies = Counter(pixels_list)
+        print(f"Extracted {len(self.color_frequencies)} unique colors from the image.")
 
-            # Convert to different color spaces
-            self.pixels_lab = color.rgb2lab(
-                pixels_rgb_norm.reshape(1, -1, 3))[0]
-            self.pixels_hsv = color.rgb2hsv(
-                pixels_rgb_norm.reshape(1, -1, 3))[0]
+    def detect_critical_regions(self):
+        """
+        Detect critical regions like skin tones and faces.
+        """
+        # Create masks for critical regions
+        self.skin_mask = self.detect_skin_regions()
+        self.face_mask = self.detect_face_regions()
+        self.critical_mask = cv2.bitwise_or(self.skin_mask, self.face_mask)
+        print("Critical regions (skin and faces) detected.")
 
-            # Calculate color frequencies
-            self.color_frequencies = Counter(map(tuple, self.pixels_rgb))
-        except Exception as e:
-            raise RuntimeError(f"Color extraction failed: {str(e)}")
+    def detect_skin_regions(self) -> np.ndarray:
+        """
+        Detect skin regions in the image using HSV color thresholds.
+        :return: A binary mask of skin regions.
+        """
+        # Convert image to HSV color space
+        image_hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
+        # Define skin color range in HSV
+        lower_skin = np.array([0, 30, 60], dtype=np.uint8)
+        upper_skin = np.array([20, 150, 255], dtype=np.uint8)
+        # Create a mask for skin regions
+        skin_mask = cv2.inRange(image_hsv, lower_skin, upper_skin)
+        # Apply morphological operations to clean up the mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel)
+        return skin_mask
 
-    def analyze_color_distribution(self) -> None:
-        """Analyze color distribution and identify important colors"""
-        try:
-            self.sorted_colors = sorted(
-                self.color_frequencies.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )
+    def detect_face_regions(self) -> np.ndarray:
+        """
+        Detect face regions in the image using Haar cascades.
+        :return: A binary mask of face regions.
+        """
+        # Load pre-trained Haar cascade for face detection
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # Convert image to grayscale for face detection
+        gray_image = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+        # Detect faces
+        faces = face_cascade.detectMultiScale(gray_image, scaleFactor=1.1, minNeighbors=5)
+        # Create a mask for face regions
+        face_mask = np.zeros_like(gray_image, dtype=np.uint8)
+        for (x, y, w, h) in faces:
+            cv2.rectangle(face_mask, (x, y), (x + w, y + h), 255, -1)
+        return face_mask
 
-            total_pixels = len(self.pixels_rgb)
-            self.important_colors = {
-                color for color, freq in self.sorted_colors
-                if freq >= self.min_color_frequency
-            }
-        except Exception as e:
-            raise RuntimeError(f"Color distribution analysis failed: {str(e)}")
+    def quantize_colors(self):
+        """
+        Quantize colors in the image, treating critical and non-critical regions differently.
+        """
+        # Flatten the image and masks
+        pixels = self.pixels
+        critical_mask_flat = self.critical_mask.flatten()
 
-    def detect_special_cases(self) -> None:
-        """Detect special cases like skin tones"""
-        try:
-            self.special_cases = {
-                'skin_tones': set(),
-                'dominant_colors': set(),
-                'edge_colors': set()
-            }
+        # Separate critical and non-critical pixels
+        critical_pixels = pixels[critical_mask_flat > 0]
+        non_critical_pixels = pixels[critical_mask_flat == 0]
 
-            total_pixels = len(self.pixels_rgb)
-            for color, freq in self.sorted_colors:
-                # Convert color to numpy array for processing
-                color_array = np.array(color, dtype=float)
-                if self.is_skin_tone(color_array):
-                    self.special_cases['skin_tones'].add(color)
-                if freq > total_pixels * 0.01:  # More than 1% of image
-                    self.special_cases['dominant_colors'].add(color)
-        except Exception as e:
-            raise RuntimeError(f"Special case detection failed: {str(e)}")
+        # Determine the number of colors for each region
+        total_pixels = len(pixels)
+        num_critical_pixels = len(critical_pixels)
+        num_non_critical_pixels = len(non_critical_pixels)
 
-    def is_skin_tone(self, rgb: np.ndarray) -> bool:
-        """Detect if a color is likely to be a skin tone"""
-        try:
-            # Normalize RGB values to [0, 1]
-            rgb_norm = rgb / 255.0
+        # Allocate colors based on pixel counts and critical region weight
+        total_weight = num_critical_pixels * self.critical_region_weight + num_non_critical_pixels
+        num_critical_colors = int((num_critical_pixels * self.critical_region_weight / total_weight) * self.max_colors)
+        num_non_critical_colors = self.max_colors - num_critical_colors
+        num_critical_colors = max(num_critical_colors, 10)  # Ensure at least 10 colors
+        num_non_critical_colors = max(num_non_critical_colors, 10)  # Ensure at least 10 colors
 
-            # Reshape for skimage color conversion
-            rgb_reshaped = rgb_norm.reshape(1, 1, 3)
+        print(f"Quantizing critical regions into {num_critical_colors} colors.")
+        print(f"Quantizing non-critical regions into {num_non_critical_colors} colors.")
 
-            # Convert to HSV
-            hsv = color.rgb2hsv(rgb_reshaped)[0][0]
-            h, s, v = hsv
+        # Quantize critical pixels
+        critical_pixels_float = np.float32(critical_pixels)
+        kmeans_critical = MiniBatchKMeans(n_clusters=num_critical_colors, random_state=42)
+        labels_critical = kmeans_critical.fit_predict(critical_pixels_float)
+        centers_critical = np.uint8(kmeans_critical.cluster_centers_)
 
-            # Skin tone typically has these characteristics
-            hue_ok = (h >= 0.0 and h <= 0.1) or (h >= 0.9 and h <= 1.0)
-            sat_ok = s >= 0.2 and s <= 0.6
-            val_ok = v >= 0.4 and v <= 1.0
+        # Quantize non-critical pixels
+        non_critical_pixels_float = np.float32(non_critical_pixels)
+        kmeans_non_critical = MiniBatchKMeans(n_clusters=num_non_critical_colors, random_state=42)
+        labels_non_critical = kmeans_non_critical.fit_predict(non_critical_pixels_float)
+        centers_non_critical = np.uint8(kmeans_non_critical.cluster_centers_)
 
-            return hue_ok and sat_ok and val_ok
-        except Exception as e:
-            raise RuntimeError(f"Skin tone detection failed: {str(e)}")
+        # Combine centers to form the color palette
+        self.color_palette = np.vstack((centers_critical, centers_non_critical))
+        self.labels = np.zeros(len(pixels), dtype=np.uint8)
+        self.labels[critical_mask_flat > 0] = labels_critical
+        self.labels[critical_mask_flat > 0] += 0  # Critical labels start from 0
+        self.labels[critical_mask_flat == 0] = labels_non_critical + num_critical_colors  # Offset non-critical labels
 
-    def group_colors(self) -> None:
-        """Group colors using multiple clustering approaches"""
-        try:
-            # Normalize LAB colors for clustering
-            scaler = StandardScaler()
-            lab_normalized = scaler.fit_transform(self.pixels_lab)
+        print(f"Total unique colors after quantization: {len(self.color_palette)}")
 
-            # Initial clustering with DBSCAN
-            dbscan = DBSCAN(eps=0.3, min_samples=5)
-            rough_labels = dbscan.fit_predict(lab_normalized)
+    def group_colors(self):
+        """
+        Group colors into natural families and ensure light-to-warm progression.
+        """
+        # Convert color palette to Lab color space for perceptual uniformity
+        palette_lab = cv2.cvtColor(self.color_palette.reshape(-1, 1, 3), cv2.COLOR_BGR2Lab).reshape(-1, 3)
 
-            # Handle case where DBSCAN finds no clusters
-            unique_labels = np.unique(rough_labels[rough_labels >= 0])
-            if len(unique_labels) == 0:
-                num_categories = self.max_categories
-            else:
-                num_categories = min(len(unique_labels), self.max_categories)
+        # Perform Agglomerative Clustering to group colors
+        num_groups = min(self.max_groups, len(self.color_palette))
+        clustering = AgglomerativeClustering(n_clusters=num_groups)
+        group_labels = clustering.fit_predict(palette_lab)
 
-            # Refine with KMeans
-            kmeans = KMeans(n_clusters=num_categories, random_state=42)
-            self.color_labels = kmeans.fit_predict(lab_normalized)
+        # Organize colors into groups
+        self.color_groups = {i: [] for i in range(num_groups)}
+        for color, group_label in zip(self.color_palette, group_labels):
+            self.color_groups[group_label].append(tuple(int(c) for c in color))
 
-            # Organize colors into categories
-            self.color_categories = {
-                label: {'pixels': [], 'indices': [], 'special_cases': set()}
-                for label in range(num_categories)
-            }
+        # Sort colors within each group
+        for group_id, colors in self.color_groups.items():
+            sorted_colors = self.sort_colors_within_group(colors)
+            self.color_groups[group_id] = sorted_colors
 
-            for idx, (label, pixel_rgb) in enumerate(zip(self.color_labels, self.pixels_rgb)):
-                pixel_tuple = tuple(pixel_rgb)
-                category = self.color_categories[label]
-                category['pixels'].append(pixel_tuple)
-                category['indices'].append(idx)
+        print(f"Colors grouped into {num_groups} natural families.")
 
-                # Track special cases in each category
-                if pixel_tuple in self.special_cases['skin_tones']:
-                    category['special_cases'].add(('skin_tone', pixel_tuple))
-                if pixel_tuple in self.special_cases['dominant_colors']:
-                    category['special_cases'].add(('dominant', pixel_tuple))
-        except Exception as e:
-            raise RuntimeError(f"Color grouping failed: {str(e)}")
+    def sort_colors_within_group(self, colors: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
+        """
+        Sort colors within a group based on lightness and warmth.
+        :param colors: List of colors in BGR format.
+        :return: Sorted list of colors.
+        """
+        # Convert to Lab and HSV color spaces
+        colors_np = np.array(colors, dtype=np.uint8).reshape(-1, 1, 3)
+        colors_lab = cv2.cvtColor(colors_np, cv2.COLOR_BGR2Lab).reshape(-1, 3)
+        colors_hsv = cv2.cvtColor(colors_np, cv2.COLOR_BGR2HSV).reshape(-1, 3)
 
-    def find_similar_color(self, color: np.ndarray,
-                           palette: List[Tuple[int, int, int]],
-                           is_special: bool = False) -> Tuple[int, int, int]:
-        """Find the most similar color in the palette"""
-        try:
-            # Convert single color and palette to LAB space
-            color_norm = color.reshape(1, 1, 3) / 255.0
-            color_lab = color.rgb2lab(color_norm)[0][0]
+        # Create sorting keys based on lightness (Lab L channel) and warmth (HSV Hue)
+        sorting_keys = [(
+            lab[0],  # Lightness
+            hsv[0]  # Hue
+        ) for lab, hsv in zip(colors_lab, colors_hsv)]
 
-            palette_array = np.array(
-                palette, dtype=float).reshape(-1, 1, 3) / 255.0
-            palette_lab = color.rgb2lab(palette_array)[:, 0, :]
+        # Sort colors based on the keys
+        sorted_colors_with_keys = sorted(zip(sorting_keys, colors), reverse=True)
+        sorted_colors = [color for _, color in sorted_colors_with_keys]
+        return sorted_colors
 
-            # Calculate color differences
-            differences = np.array([
-                color.delta_e(color_lab, p_lab, method='ciede2000')
-                for p_lab in palette_lab
-            ])
+    def replace_colors(self):
+        """
+        Replace colors in the image with the reduced palette, preserving critical colors.
+        """
+        # Map each label to its corresponding color in the palette
+        new_pixels = self.color_palette[self.labels]
+        self.quantized_image = new_pixels.reshape(self.image.shape)
+        print("Colors replaced in the image with the reduced palette.")
 
-            # For special cases, use stricter similarity threshold
-            if is_special:
-                threshold = 5.0
-                valid_indices = differences < threshold
-                if np.any(valid_indices):
-                    differences = differences[valid_indices]
-                    palette = np.array(palette)[valid_indices]
+    def update_image(self):
+        """
+        Update the image with the quantized colors and prepare color ranges.
+        """
+        # Convert the image back to PIL Image format
+        self.image_pil = Image.fromarray(cv2.cvtColor(self.quantized_image, cv2.COLOR_BGR2RGB))
+        self.prepare_color_ranges()
+        print("Image updated with quantized colors.")
 
-            closest_color = palette[np.argmin(differences)]
-            return tuple(map(int, closest_color))
-        except Exception as e:
-            raise RuntimeError(
-                f"Color similarity calculation failed: {str(e)}")
+    def prepare_color_ranges(self):
+        """
+        Prepare color ranges sorted by luminance and grouped naturally.
+        """
+        self.color_ranges = []
+        for group_id in sorted(self.color_groups.keys()):
+            colors = self.color_groups[group_id]
+            self.color_ranges.append(colors)
+        print("Color ranges prepared and sorted.")
 
-    def limit_colors_within_categories(self) -> None:
-        """Limit colors within each category while preserving special cases"""
-        try:
-            self.limited_categories = {}
-            self.color_palette = []
+    def get_image(self) -> Image.Image:
+        """
+        Get the processed image.
+        :return: PIL.Image.Image - The quantized image.
+        """
+        return self.image_pil
 
-            for label, category in self.color_categories.items():
-                pixels = category['pixels']
-                special_cases = category['special_cases']
+    def get_color_palette(self) -> List[Tuple[int, int, int]]:
+        """
+        Get the color palette used in the quantized image.
+        :return: List of BGR color tuples.
+        """
+        return [tuple(int(c) for c in color) for color in self.color_palette]
 
-                # Ensure special cases are preserved
-                preserved_colors = {color for _, color in special_cases}
-                remaining_slots = self.max_colors_per_category - \
-                    len(preserved_colors)
-
-                if remaining_slots > 0 and pixels:
-                    # Cluster remaining colors
-                    remaining_pixels = [
-                        p for p in pixels if p not in preserved_colors]
-                    if remaining_pixels:
-                        kmeans = KMeans(
-                            n_clusters=min(remaining_slots,
-                                           len(remaining_pixels)),
-                            random_state=42
-                        )
-                        remaining_pixels_array = np.array(remaining_pixels)
-                        labels = kmeans.fit_predict(remaining_pixels_array)
-                        centers = kmeans.cluster_centers_
-
-                        category_palette = list(preserved_colors) + [
-                            tuple(map(int, center)) for center in centers
-                        ]
-                    else:
-                        category_palette = list(preserved_colors)
-                else:
-                    category_palette = list(preserved_colors)[
-                        :self.max_colors_per_category]
-
-                self.limited_categories[label] = {
-                    'palette': category_palette,
-                    'indices': category['indices']
-                }
-                self.color_palette.extend(category_palette)
-        except Exception as e:
-            raise RuntimeError(f"Color limitation failed: {str(e)}")
-
-    def replace_excess_colors(self) -> None:
-        """Replace colors while preserving special cases"""
-        try:
-            new_pixels = np.zeros_like(self.pixels_rgb)
-
-            for label, category in self.limited_categories.items():
-                indices = category['indices']
-                palette = category['palette']
-
-                if not palette:  # Skip if palette is empty
-                    continue
-
-                # Process each pixel in the category
-                for idx in indices:
-                    original_color = self.pixels_rgb[idx]
-                    original_tuple = tuple(original_color)
-                    is_special = any(
-                        original_tuple == color
-                        for _, color in self.color_categories[label]['special_cases']
-                    )
-
-                    if original_tuple in palette:
-                        new_pixels[idx] = original_color
-                    else:
-                        new_color = self.find_similar_color(
-                            original_color, palette, is_special)
-                        new_pixels[idx] = new_color
-
-            self.image_data = new_pixels.reshape(self.image_data.shape)
-        except Exception as e:
-            raise RuntimeError(f"Color replacement failed: {str(e)}")
-
-    def update_image(self) -> None:
-        """Update image and prepare color ranges"""
-        try:
-            self.image = Image.fromarray(
-                self.image_data.astype('uint8'), 'RGB')
-            self.prepare_color_ranges()
-        except Exception as e:
-            raise RuntimeError(f"Image update failed: {str(e)}")
-
-    def prepare_color_ranges(self) -> None:
-        """Prepare color ranges sorted by luminance"""
-        try:
-            self.color_ranges = []
-            for category in self.limited_categories.values():
-                if not category['palette']:  # Skip empty palettes
-                    continue
-
-                # Convert to LAB for better luminance sorting
-                palette_array = np.array(
-                    category['palette'], dtype=float) / 255.0
-                palette_lab = color.rgb2lab(
-                    palette_array.reshape(-1, 1, 3))[:, 0, :]
-
-                # Sort by L value (luminance)
-                sorted_indices = np.argsort(
-                    [lab[0] for lab in palette_lab])[::-1]
-                sorted_colors = [category['palette'][i]
-                                 for i in sorted_indices]
-                self.color_ranges.append(sorted_colors)
-        except Exception as e:
-            raise RuntimeError(f"Color range preparation failed: {str(e)}")
+    def get_color_ranges(self) -> List[List[Tuple[int, int, int]]]:
+        """
+        Get the color ranges grouped and sorted.
+        :return: List of color groups, each containing a list of BGR color tuples.
+        """
+        return self.color_ranges
