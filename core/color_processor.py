@@ -230,7 +230,7 @@ class ColorProcessor:
         Update the image with the quantized colors and prepare color ranges.
         """
         # Convert the image back to PIL Image format
-        self.image_pil = Image.fromarray(cv2.cvtColor(self.quantized_image, cv2.COLOR_BGR2RGB))
+        self.image = Image.fromarray(cv2.cvtColor(self.quantized_image, cv2.COLOR_BGR2RGB))
         self.prepare_color_ranges()
         print("Image updated with quantized colors.")
 
@@ -249,7 +249,7 @@ class ColorProcessor:
         Get the processed image.
         :return: PIL.Image.Image - The quantized image.
         """
-        return self.image_pil
+        return self.image
 
     def get_color_palette(self) -> List[Tuple[int, int, int]]:
         """
