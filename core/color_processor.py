@@ -148,7 +148,7 @@ class ColorProcessor:
         if total_unique_colors < self.min_colors:
             self.max_colors = total_unique_colors
         else:
-            self.max_colors = self.max_colors if total_unique_colors > self.max_colors else total_unique_colors
+            self.max_colors = min(self.max_colors, total_unique_colors)
             self.max_colors = max(self.max_colors, self.min_colors)
 
         print(f"Total colors to quantize: {self.max_colors}")
@@ -174,43 +174,28 @@ class ColorProcessor:
         print(
             f"Quantizing non-critical regions into {num_non_critical_colors} colors.")
 
-        # Quantize critical pixels
-        critical_pixels_float = np.float32(critical_pixels)
-        kmeans_critical = MiniBatchKMeans(
-            n_clusters=num_critical_colors, random_state=42)
-        labels_critical = kmeans_critical.fit_predict(critical_pixels_float)
-        centers_critical = np.uint8(kmeans_critical.cluster_centers_)
+        # Combine critical and non-critical pixels for clustering to merge similar colors
+        all_pixels = np.vstack((critical_pixels, non_critical_pixels))
+        num_clusters = num_critical_colors + num_non_critical_colors
 
-        # Quantize non-critical pixels
-        non_critical_pixels_float = np.float32(non_critical_pixels)
-        kmeans_non_critical = MiniBatchKMeans(
-            n_clusters=num_non_critical_colors, random_state=42)
-        labels_non_critical = kmeans_non_critical.fit_predict(
-            non_critical_pixels_float)
-        centers_non_critical = np.uint8(kmeans_non_critical.cluster_centers_)
+        # Perform K-Means clustering on all pixels
+        all_pixels_float = np.float32(all_pixels)
+        kmeans = MiniBatchKMeans(n_clusters=num_clusters, random_state=42)
+        all_labels = kmeans.fit_predict(all_pixels_float)
+        centers = np.uint8(kmeans.cluster_centers_)
 
-        # Combine centers to form the color palette
-        self.color_palette = np.vstack(
-            (centers_critical, centers_non_critical))
+        # Map labels back to original pixels
+        self.color_palette = centers
         self.labels = np.zeros(len(pixels), dtype=np.uint16)
-        self.labels[critical_mask_flat > 0] = labels_critical
-        # Critical labels start from 0
-        self.labels[critical_mask_flat > 0] += 0
-        self.labels[critical_mask_flat == 0] = labels_non_critical + \
-            num_critical_colors  # Offset non-critical labels
+        self.labels[critical_mask_flat > 0] = all_labels[:len(critical_pixels)]
+        self.labels[critical_mask_flat ==
+                    0] = all_labels[len(critical_pixels):]
 
         print(
             f"Total unique colors after quantization: {len(self.color_palette)}")
 
     def _adjust_color_count(self, color_count):
-        """
-        Adjust the number of colors to match the allowed colors per group options.
-        """
-        # Find the closest allowed number of colors per group
-        for colors_per_group in self.colors_per_group_options:
-            if color_count % colors_per_group == 0:
-                return color_count
-        # If not divisible, adjust to the nearest multiple
+        # Adjust color count to be multiple of allowed colors per group
         colors_per_group = min(self.colors_per_group_options)
         adjusted_color_count = (
             color_count // colors_per_group) * colors_per_group
@@ -227,15 +212,14 @@ class ColorProcessor:
             self.color_palette.reshape(-1, 1, 3), cv2.COLOR_BGR2Lab).reshape(-1, 3)
 
         # Determine the number of groups based on allowed options
-        possible_groups = []
-        for num_groups in range(self.min_groups, self.max_groups + 1):
-            if len(self.color_palette) % num_groups == 0:
-                possible_groups.append(num_groups)
-        if not possible_groups:
-            num_groups = self.min_groups
+        total_colors = len(self.color_palette)
+        for colors_per_group in self.colors_per_group_options:
+            if total_colors % colors_per_group == 0:
+                num_groups = total_colors // colors_per_group
+                break
         else:
-            num_groups = min(possible_groups, key=lambda x: abs(
-                x - ((self.min_groups + self.max_groups) // 2)))
+            # Default to minimum groups
+            num_groups = self.min_groups
 
         # Perform Agglomerative Clustering to group colors
         clustering = AgglomerativeClustering(n_clusters=num_groups)
@@ -246,8 +230,8 @@ class ColorProcessor:
         for color, group_label in zip(self.color_palette, group_labels):
             self.color_groups[group_label].append(tuple(int(c) for c in color))
 
-        # Ensure each group has the allowed number of colors
-        self._adjust_groups()
+        # Ensure each group has exact colors_per_group
+        self._ensure_group_sizes()
 
         # Sort colors within each group
         for group_id, colors in self.color_groups.items():
@@ -259,44 +243,18 @@ class ColorProcessor:
 
         print(f"Colors grouped into {num_groups} natural families.")
 
-    def _adjust_groups(self):
-        """
-        Adjust groups to ensure each group has exactly 10 or 12 colors.
-        """
-        all_colors = []
-        for group_colors in self.color_groups.values():
-            all_colors.extend(group_colors)
-
+    def _ensure_group_sizes(self):
+        # Adjust groups to ensure each group has exactly colors_per_group colors
         colors_per_group = min(self.colors_per_group_options)
-        total_colors_needed = colors_per_group * len(self.color_groups)
+        all_colors = [color for group in self.color_groups.values()
+                      for color in group]
+        num_groups = len(self.color_groups)
 
-        if len(all_colors) < total_colors_needed:
-            # Not enough colors, reduce the number of groups
-            num_groups = len(all_colors) // colors_per_group
-            num_groups = max(num_groups, self.min_groups)
-            self.color_groups = {i: [] for i in range(num_groups)}
-            for idx, color in enumerate(all_colors):
-                group_id = idx % num_groups
-                self.color_groups[group_id].append(color)
-        else:
-            # Trim or expand groups to have exact colors_per_group
-            for group_id in self.color_groups:
-                group_colors = self.color_groups[group_id]
-                if len(group_colors) > colors_per_group:
-                    self.color_groups[group_id] = group_colors[:colors_per_group]
-                elif len(group_colors) < colors_per_group:
-                    # Add colors from other groups to fill
-                    needed = colors_per_group - len(group_colors)
-                    for other_group_id in self.color_groups:
-                        if other_group_id != group_id and len(self.color_groups[other_group_id]) > colors_per_group:
-                            extra_colors = self.color_groups[other_group_id][colors_per_group:]
-                            take = min(needed, len(extra_colors))
-                            self.color_groups[group_id].extend(
-                                extra_colors[:take])
-                            self.color_groups[other_group_id] = self.color_groups[other_group_id][:colors_per_group]
-                            needed -= take
-                            if needed == 0:
-                                break
+        # Reassign colors to groups
+        self.color_groups = {i: [] for i in range(num_groups)}
+        for idx, color in enumerate(all_colors):
+            group_id = idx // colors_per_group
+            self.color_groups[group_id].append(color)
 
     def _sort_groups(self):
         """
@@ -311,12 +269,15 @@ class ColorProcessor:
             avg_lab = np.mean(colors_lab, axis=0)
             group_representatives.append((group_id, avg_lab))
 
-        # Sort groups based on lightness and warmth (Lab L and a channels)
+        # Sort groups based on lightness (L channel)
         sorted_groups = sorted(group_representatives,
-                               key=lambda x: (x[1][0], x[1][1]), reverse=True)
+                               key=lambda x: x[1][0], reverse=True)
+
         # Reorder self.color_groups based on sorted group IDs
-        self.color_groups = {idx: self.color_groups[group_id]
-                             for idx, (group_id, _) in enumerate(sorted_groups)}
+        sorted_color_groups = {}
+        for idx, (group_id, _) in enumerate(sorted_groups):
+            sorted_color_groups[idx] = self.color_groups[group_id]
+        self.color_groups = sorted_color_groups
 
     def sort_colors_within_group(self, colors: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
         """
@@ -327,15 +288,7 @@ class ColorProcessor:
         # Convert to Lab and HSV color spaces
         colors_np = np.array(colors, dtype=np.uint8).reshape(-1, 1, 3)
         colors_lab = cv2.cvtColor(colors_np, cv2.COLOR_BGR2Lab).reshape(-1, 3)
-        colors_hsv = cv2.cvtColor(colors_np, cv2.COLOR_BGR2HSV).reshape(-1, 3)
-
-        # Create sorting keys based on lightness (Lab L channel) and warmth (HSV Hue)
-        sorting_keys = [(
-            lab[0],  # Lightness
-            hsv[0]   # Hue
-        ) for lab, hsv in zip(colors_lab, colors_hsv)]
-
-        # Sort colors based on the keys
+        sorting_keys = [lab[0] for lab in colors_lab]
         sorted_colors_with_keys = sorted(
             zip(sorting_keys, colors), reverse=True)
         sorted_colors = [color for _, color in sorted_colors_with_keys]
