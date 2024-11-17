@@ -100,7 +100,8 @@ class MainWindow(QMainWindow):
             density = float(self.density_input.text())
             self.calculator.density = density
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid density.")
+            QMessageBox.warning(self, "Invalid Input",
+                                "Please enter a valid density.")
             return
 
         self.width_cm, self.height_cm = self.calculator.calculate_size(
@@ -175,9 +176,13 @@ class MainWindow(QMainWindow):
             lambda: self.process_button.setEnabled(True))
 
     def processing_finished(self, color_processor):
+        print("processing_finished slot called")
+
         self.color_processor = color_processor
         self.color_processor.update_image()
-        self.image_handler.image = self.color_processor.image
+        self.image_handler.image = self.color_processor.get_image()
+
+        print("Processing finished, starting to save images and reports")
 
         # Prepare variables for filename
         width_cm = self.width_cm
@@ -188,20 +193,29 @@ class MainWindow(QMainWindow):
         report_dir = os.path.join(os.getcwd(), 'report')
         os.makedirs(report_dir, exist_ok=True)
 
-        # Construct the filename with width, height, and density
+        # Construct filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         image_filename = f"processed_image_{width_cm:.2f}x{height_cm:.2f}_density{density}_{timestamp}.png"
         image_path = os.path.join(report_dir, image_filename)
 
-        # Save the image
+        original_image_path = os.path.join(
+            report_dir, f"original_image_{timestamp}.png")
+        print(f"Saving original image to {original_image_path}")
+        self.image_handler.save_original_image(original_image_path)
+
+        # Save the processed image
+        print(f"Saving processed image to {image_path}")
         self.image_handler.save_image(image_path)
 
         # Generate PDF report
         pdf_filename = f"color_report_{timestamp}.pdf"
         pdf_path = os.path.join(report_dir, pdf_filename)
-        report = PDFReport(self.color_processor.color_ranges)
+        print(f"Generating PDF report at {pdf_path}")
+        report = PDFReport(self.color_processor.get_color_ranges(),
+                           original_image_path, image_path)
         report.generate(pdf_path)
 
+        print("Report generated successfully")
         QMessageBox.information(
             self,
             "Success",
@@ -220,6 +234,8 @@ class ProcessingWorker(QObject):
 
     def run(self):
         processor = ColorProcessor(self.image)
-        processor.process_colors(self.progress)
+        # Pass a lambda function that emits the progress signal
+        processor.process_colors(
+            progress_callback=lambda p: self.progress.emit(p))
         self.result.emit(processor)
         self.finished.emit()
